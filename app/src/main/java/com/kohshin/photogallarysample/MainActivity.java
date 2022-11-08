@@ -13,16 +13,18 @@ import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.MediaController;
 import android.widget.TextView;
+import android.widget.VideoView;
 
-import java.io.FileDescriptor;
-import java.io.IOException;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
 
     private TextView textView;
     private ImageView imageView;
+
+    VideoView v;
 
     ActivityResultLauncher<Intent> resultLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
@@ -41,7 +43,9 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         textView = findViewById(R.id.text_view);
-        imageView = findViewById(R.id.image_view);
+
+        // ID取得
+        v = (VideoView)findViewById(R.id.v);
 
         Button button = findViewById(R.id.button);
         button.setOnClickListener( v -> {
@@ -54,30 +58,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     void openImage(Intent resultData){
-        ParcelFileDescriptor pfDescriptor = null;
-        try{
-            Uri uri = resultData.getData();
-            // Uriを表示
-            textView.setText( String.format(Locale.US, "Uri:　%s",uri.toString()));
+        Uri uri = resultData.getData();
+        // Uriを表示
+        textView.setText( String.format(Locale.US, "Uri:　%s",uri.toString()));
 
-            pfDescriptor = getContentResolver().openFileDescriptor(uri, "r");
-            if(pfDescriptor != null){
-                FileDescriptor fileDescriptor = pfDescriptor.getFileDescriptor();
-                Bitmap bmp = BitmapFactory.decodeFileDescriptor(fileDescriptor);
-                pfDescriptor.close();
-                imageView.setImageBitmap(bmp);
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        } finally {
-            try{
-                if(pfDescriptor != null){
-                    pfDescriptor.close();
-                }
-            }catch (Exception e){
-                e.printStackTrace();
-            }
-        }
+        // 動画の指定
+        v.setVideoURI(uri);
+
+        // 再生スタート
+        v.start();
+
+        // コントローラNO（動画をタップするとメニュー表示）
+        v.setMediaController(new MediaController(this));
     }
 
 }
