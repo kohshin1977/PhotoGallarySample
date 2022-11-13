@@ -4,9 +4,14 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetFileDescriptor;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.AudioFormat;
@@ -15,9 +20,13 @@ import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
+import android.media.MediaMetadataRetriever;
+import android.media.MediaMuxer;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.provider.DocumentsContract;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.ImageView;
@@ -25,8 +34,16 @@ import android.widget.MediaController;
 import android.widget.TextView;
 import android.widget.VideoView;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
+import java.util.GregorianCalendar;
+import java.util.HashMap;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
@@ -35,12 +52,7 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
 
-    /** バッファを取り出す際のタイムアウト時間(マイクロ秒) */
-    private static final long TIMEOUT_US = 1;
-
-    /** 音声再生用のAudioTrack */
-    private AudioTrack mAudioTrack;
-
+    private static final int DEFAULT_BUFFER_SIZE = 1 * 1024 * 1024;
 
     ActivityResultLauncher<Intent> resultLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
@@ -70,142 +82,170 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private static final String DIR_NAME = "DelayCamera";
+    private static final SimpleDateFormat mDateTimeFormat = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US);
+    private String DATE_STRING = "";
+
     void openImage(Intent resultData){
         Uri uri = resultData.getData();
         // Uriを表示
         textView.setText( String.format(Locale.US, "Uri:　%s",uri.toString()));
 
-        // assetsからメディアファイルを読み込む
-//        AssetFileDescriptor descriptor = getResources().openRawResourceFd( R.raw.sample);
+        File path = getApplicationContext().getFilesDir();
 
-        // MediaExtractorでファイルからフォーマット情報を抽出。
+        File dir = new File(path.toString() + "/PhotoGallarySample");
+        dir.mkdir();
+        File file = new File(dir.toString() + "/" + getDateTimeString() + ".aac");
+        String new_file = file.toString();
+
+        try {
+            genVideoUsingMuxer(uri, new_file, -1, -1, true, false);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+//      public void genVideoUsingMuxer(String srcPath, String dstPath, int startMs, int endMs, boolean useAudio, boolean useVideo) throws IOException {
+
+        //ファイルをアプリから見えるようにする。
+        File file2 = new File(new_file);
+        String[] split_file = new_file.split("/");
+
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Audio.Media.DISPLAY_NAME, split_file[split_file.length-1]);
+        values.put(MediaStore.Audio.Media.MIME_TYPE, "audio/*");
+
+        Uri contentUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+
+        ContentResolver resolver = getApplicationContext().getContentResolver();
+        Uri item = resolver.insert(contentUri, values);
+
+        InputStream inputStream = null;
+        OutputStream outputStream = null;
+        try {
+            inputStream = new FileInputStream(new_file);
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        }
+
+        try {
+            outputStream = resolver.openOutputStream(item);
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        }
+
+        byte buf[]=new byte[5120];
+        int len;
+
+        try {
+            while((len=inputStream.read(buf)) != -1){
+                outputStream.write(buf,0,len);
+            }
+            outputStream.flush();
+
+            outputStream.close();
+            inputStream.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        //元ファイルを削除する
+//        if(file.exists()){
+//            file.delete();
+//        }
+
+
+
+    }
+
+
+    @SuppressLint({"NewApi", "WrongConstant"})
+    public void genVideoUsingMuxer(Uri uri, String dstPath, int startMs, int endMs, boolean useAudio, boolean useVideo) throws IOException {
+        // Set up MediaExtractor to read from the source.
         MediaExtractor extractor = new MediaExtractor();
-        try {
-//            extractor.setDataSource(descriptor.getFileDescriptor(), descriptor.getStartOffset(), descriptor.getLength());
-            extractor.setDataSource(getApplicationContext(), uri, null);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
-        // トラック数
-        // 動画の場合、トラック1が映像、トラック2が音声？
-        Log.d(TAG, String.format("TRACKS #: %d", extractor.getTrackCount()));
-
-        // 音声のMime Type
-        MediaFormat format = extractor.getTrackFormat(1);
-        String mime = format.getString(MediaFormat.KEY_MIME);
-        Log.d(TAG, String.format("Audio MIME TYPE: %s", mime));
-
-
-        // デコーターを作成する
-        MediaCodec codec = null;
-        try {
-            codec = MediaCodec.createDecoderByType(mime);
-            codec.configure(format, null, null, 0);
-            codec.start();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
-        // デコーダーからInputBuffer, OutputBufferを取得する
-        ByteBuffer[] codecInputBuffers;
-        ByteBuffer[] codecOutputBuffers;
-        codecInputBuffers = codec.getInputBuffers();
-        codecOutputBuffers = codec.getOutputBuffers();
-
-        // 読み込むトラック番号を指定する
-        // ここでは音声を指定
-        extractor.selectTrack(1);
-
-        // AudioTrac生成用にメディアから情報取得
-        // サンプリングレート
-        int sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-        // バッファの最大バイトサイズ
-        int maxSize = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE);
-
-        // AudioTrackのインスタンス生成
-        mAudioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, // 音楽再生用のオーディオストリーム
-                sampleRate, // サンプリングレート
-                AudioFormat.CHANNEL_OUT_STEREO, // ステレオ
-                AudioFormat.ENCODING_PCM_16BIT, // フォーマット
-//                maxSize,// 合計バッファサイズ
-                1024,// maxSizeだとエラーになってしまうので固定値を設定する。
-                AudioTrack.MODE_STREAM); // ストリームモード
-        // 再生開始
-        mAudioTrack.play();
-
-        // インプットバッファがEnd Of Streamかどうかを判定するフラグ
-        boolean sawInputEOS = false;
-
-        // 以下、バッファの処理。インプットバッファの数だけ繰り返す
-        for (;;) {
-            // TIMEOUT_USが 0 だと待ち時間なしで即結果を返す。
-            // 負の値で無限に応答を待つ
-            // 正の値だと 値 microseconds分だけ待つ
-            int inputBufIndex = codec.dequeueInputBuffer(TIMEOUT_US);
-
-            // Log.d(LOG_TAG, String.format("Input Buffer Index =  %d",
-            // inputBufIndex));
-
-            if (inputBufIndex >= 0) {
-                // インプットバッファの配列から対象のバッファを取得
-                ByteBuffer dstBuf = codecInputBuffers[inputBufIndex];
-                // バッファサイズ
-                int bufferSize = extractor.readSampleData(dstBuf, 0);
-                long presentationTimeUs = 0;
-                if (bufferSize < 0) {
-                    sawInputEOS = true;
-                    bufferSize = 0;
-                } else {
-                    presentationTimeUs = extractor.getSampleTime();
+        extractor.setDataSource(getApplicationContext(), uri, null);
+        int trackCount = extractor.getTrackCount();
+        // Set up MediaMuxer for the destination.
+        MediaMuxer muxer;
+        muxer = new MediaMuxer(dstPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        // Set up the tracks and retrieve the max buffer size for selected
+        // tracks.
+        HashMap<Integer, Integer> indexMap = new HashMap<Integer, Integer>(trackCount);
+        int bufferSize = -1;
+        for (int i = 0; i < trackCount; i++) {
+            MediaFormat format = extractor.getTrackFormat(i);
+            String mime = format.getString(MediaFormat.KEY_MIME);
+            boolean selectCurrentTrack = false;
+            if (mime.startsWith("audio/") && useAudio) {
+                selectCurrentTrack = true;
+            } else if (mime.startsWith("video/") && useVideo) {
+                selectCurrentTrack = true;
+            }
+            if (selectCurrentTrack) {
+                extractor.selectTrack(i);
+                int dstIndex = muxer.addTrack(format);
+                indexMap.put(i, dstIndex);
+                if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                    int newSize = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE);
+                    bufferSize = newSize > bufferSize ? newSize : bufferSize;
                 }
-
-                // デコード処理してアウトプットバッファに追加？
-                codec.queueInputBuffer(inputBufIndex, 0, bufferSize, presentationTimeUs,
-                        sawInputEOS ? MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0);
-
-                if (!sawInputEOS) {
-                    extractor.advance();
-                } else {
+            }
+        }
+        if (bufferSize < 0) {
+            bufferSize = DEFAULT_BUFFER_SIZE;
+        }
+        // Set up the orientation and starting time for extractor.
+        MediaMetadataRetriever retrieverSrc = new MediaMetadataRetriever();
+        retrieverSrc.setDataSource(getApplicationContext(), uri);
+        String degreesString = retrieverSrc.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+        if (degreesString != null) {
+            int degrees = Integer.parseInt(degreesString);
+            if (degrees >= 0) {
+                muxer.setOrientationHint(degrees);
+            }
+        }
+        if (startMs > 0) {
+            extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+        }
+        // Copy the samples from MediaExtractor to MediaMuxer. We will loop
+        // for copying each sample and stop when we get to the end of the source
+        // file or exceed the end time of the trimming.
+        int offset = 0;
+        int trackIndex = -1;
+        ByteBuffer dstBuf = ByteBuffer.allocate(bufferSize);
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        muxer.start();
+        while (true) {
+            bufferInfo.offset = offset;
+            bufferInfo.size = extractor.readSampleData(dstBuf, offset);
+            if (bufferInfo.size < 0) {
+                Log.d(TAG, "Saw input EOS.");
+                bufferInfo.size = 0;
+                break;
+            } else {
+                bufferInfo.presentationTimeUs = extractor.getSampleTime();
+                if (endMs > 0 && bufferInfo.presentationTimeUs > (endMs * 1000)) {
+                    Log.d(TAG, "The current sample is over the trim end time.");
                     break;
+                } else {
+                    bufferInfo.flags = extractor.getSampleFlags();
+                    trackIndex = extractor.getSampleTrackIndex();
+                    muxer.writeSampleData(indexMap.get(trackIndex), dstBuf, bufferInfo);
+                    extractor.advance();
                 }
-            }
-
-            // 出力処理
-
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            int outputBufIndex = codec.dequeueOutputBuffer(info, TIMEOUT_US);
-            // Log.d(LOG_TAG, String.format("Output Buffer Index =  %d",
-            // outputBufIndex));
-            if (outputBufIndex >= 0) {
-                // ここで出力処理をする
-                ByteBuffer buf = codecOutputBuffers[outputBufIndex];
-
-                // チャンクを作る
-                final byte[] chunk = new byte[info.size];
-                buf.get(chunk);
-                buf.clear();
-
-                // AudioTrackに書き込む
-                if (chunk.length > 0) {
-                    mAudioTrack.write(chunk, 0, chunk.length);
-                }
-                codec.releaseOutputBuffer(outputBufIndex, false);
-            } else if (outputBufIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
-                codecOutputBuffers = codec.getOutputBuffers();
-            } else if (outputBufIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                // Subsequent data will conform to new format.
-                format = codec.getOutputFormat();
-                mAudioTrack.setPlaybackRate(format.getInteger(MediaFormat.KEY_SAMPLE_RATE));
             }
         }
-        // 終了処理
-        mAudioTrack.stop();
-        extractor.release();
-        extractor = null;
-        codec.stop();
-        codec.release();
-        codec = null;
+        muxer.stop();
+        muxer.release();
+        return;
+    }
+
+    /**
+     * get current date and time as String
+     * @return
+     */
+    private static final String getDateTimeString() {
+        SimpleDateFormat mDateTimeFormat = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US);
+        final GregorianCalendar now = new GregorianCalendar();
+        return mDateTimeFormat.format(now.getTime());
     }
 
 }
